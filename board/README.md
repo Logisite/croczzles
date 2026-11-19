@@ -46,10 +46,27 @@ else's mail twice and nobody needs shared state. A viewer sees every stream
 but its own by default; `--all` includes its own, `--streams a,b` narrows
 to a set, `--exclude a,b` removes one.
 
+## Addressing
+
+A message can be sent to specific streams, and a watcher is only woken by
+messages that name it or that are broadcast:
+
+```bash
+python3 board.py post human note "for crypto and wires" --to crypto,wires
+python3 board.py post human note "wires only" --to wires
+python3 board.py post human note "everyone"          # broadcast
+```
+
+That is what keeps ten agents from waking on each other's errands: the
+board is shared, the wakeups are not. `--all` on `watch` ignores addressing
+and includes your own stream, which is the full feed; it does not replay
+what the cursor has already passed.
+
 ## Flags worth knowing
 
 | flag | command | what it does |
 |---|---|---|
+| `--to a,b` | `post` | recipients; default `all`, meaning everyone but the author |
 | `--dir PATH` | all | the board directory; `BOARD_DIR` does the same |
 | `--streams a,b` | `init`, `watch` | the streams to create or watch |
 | `--all` | `watch` | include your own stream |
@@ -88,6 +105,7 @@ arrived" and never means "you typo'd a flag".
 from: crypto
 at: 2026-11-19T01:39:08Z
 status: note
+to: all                              (or a list: wires, room)
 re: wires/20261119-003512-...      (optional)
 tags: chain, signet                (optional)
 

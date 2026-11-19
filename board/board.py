@@ -118,6 +118,7 @@ def post(
     reply_to: str | None,
     tags: list[str],
     extra: dict[str, str],
+    to: list[str],
 ) -> Path:
     now = datetime.now(timezone.utc)
     target = root / stream
@@ -125,6 +126,7 @@ def post(
 
     stem = f"{now:%Y%m%d-%H%M%S}-{slug(body)}"
     header = [f"from: {stream}", f"at: {now:%Y-%m-%dT%H:%M:%SZ}", f"status: {status}"]
+    header.append(f"to: {', '.join(to) if to else 'all'}")
     if reply_to:
         header.append(f"re: {reply_to}")
     if tags:
@@ -194,7 +196,7 @@ def messages(root: Path, stream: str | None = None, since: str | None = None) ->
 def format_message(path: Path) -> str:
     msg = parse(path)
     head = msg["head"]
-    keys = ("at", "status", "re", "tags")
+    keys = ("at", "status", "to", "re", "tags")
     meta = "  ".join(f"{k}: {head[k]}" for k in keys if k in head)
     lines = [f"--- {msg['id']}"]
     if meta:
@@ -212,10 +214,23 @@ def as_json(path: Path) -> dict:
         "file": msg["file"],
         "at": msg["head"].get("at"),
         "status": msg["head"].get("status"),
+        "to": recipients(msg),
         "re": msg["head"].get("re"),
         "tags": [t.strip() for t in msg["head"].get("tags", "").split(",") if t.strip()],
         "body": msg["body"],
     }
+
+
+def recipients(msg: dict) -> list[str]:
+    """Empty means broadcast: everyone who is not the author sees it."""
+    raw = msg["head"].get("to", "all").strip()
+    if not raw or raw in ("all", "*"):
+        return []
+    return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+def addressed_to(msg: dict, viewer: str) -> bool:
+    return viewer in recipients(msg) or not recipients(msg)
 
 
 # --- cursors -----------------------------------------------------------
@@ -263,6 +278,7 @@ def scan(
     include_own: bool,
     backlog: int,
     limit: int,
+    see_all: bool = False,
 ) -> tuple[list[Path], dict]:
     """What this viewer has not seen, and the cursor to remember."""
     found: list[Path] = []
@@ -275,6 +291,8 @@ def scan(
             continue
         mark = cursor.get(name)
         unseen = files[-backlog:] if mark is None else [p for p in files if p.name > mark]
+        if not see_all:
+            unseen = [p for p in unseen if addressed_to(parse(p), viewer)]
         found.extend(unseen)
         next_cursor[name] = files[-1].name
     if limit > 0:
@@ -357,13 +375,19 @@ def cmd_post(args: argparse.Namespace) -> int:
             raise SystemExit(f"board: --field expects key=value, got {item!r}")
         extra[key.strip()] = value.strip()
 
+    to = [part.strip() for part in args.to.split(",") if part.strip()]
+    for name in to:
+        check_name("recipient", name)
+    if len(to) == 1 and to[0] in ("all", "*"):
+        to = []
+
     body = sys.stdin.read() if args.body in (None, "-") else args.body
     if args.file:
         body = Path(args.file).read_text(encoding="utf-8")
     if not body.strip():
         raise SystemExit("board: empty message, nothing written")
 
-    path = post(root, args.stream, args.status, body, args.re, tags, extra)
+    path = post(root, args.stream, args.status, body, args.re, tags, extra, to)
     msg = parse(path)
     if args.json:
         print(json.dumps(as_json(path)))
@@ -451,7 +475,7 @@ def cmd_watch(args: argparse.Namespace) -> int:
     if args.once:
         new, next_cursor = scan(
             root, viewer, cursor or {}, include, exclude, args.all,
-            max(1, args.backlog), args.limit,
+            max(1, args.backlog), args.limit, see_all=args.all,
         )
         emit(new)
         if next_cursor != (cursor or {}):
@@ -478,7 +502,7 @@ def cmd_watch(args: argparse.Namespace) -> int:
         while True:
             new, next_cursor = scan(
                 root, viewer, cursor, include, exclude, args.all,
-                max(1, args.backlog), args.limit,
+                max(1, args.backlog), args.limit, see_all=args.all,
             )
             if new:
                 if args.notify:
@@ -528,6 +552,8 @@ def build_parser() -> Parser:
     p_post.add_argument("body", nargs="?", default="-", help='the message; "-" or omitted reads stdin')
     p_post.add_argument("-f", "--file", default=None, help="read the body from a file")
     p_post.add_argument("--re", dest="re", default=None, help="id of the message this replies to, stream/name")
+    p_post.add_argument("--to", default="all",
+                        help="recipients, comma-separated; default all (everyone but the author)")
     p_post.add_argument("--tag", action="append", default=[], help="tag, repeatable or comma-separated")
     p_post.add_argument("--field", action="append", default=[], help="extra header key=value, repeatable")
     p_post.add_argument("--json", action="store_true", help="print the message as JSON")
@@ -547,7 +573,8 @@ def build_parser() -> Parser:
     p_watch.add_argument("--every", type=int, default=2, help="seconds between checks (default 2)")
     p_watch.add_argument("--stay", action="store_true", help="keep following after printing")
     p_watch.add_argument("--once", action="store_true", help="check once and return immediately")
-    p_watch.add_argument("--all", action="store_true", help="include your own stream")
+    p_watch.add_argument("--all", action="store_true",
+                         help="ignore addressing and include your own stream: the full feed")
     p_watch.add_argument("--notify", action="store_true", help="print one summary line before the bodies")
     p_watch.add_argument("--backlog", type=int, default=3, help="on a first run, how many per stream (default 3)")
     p_watch.add_argument("--limit", type=int, default=0, help="print at most N messages per wakeup (default all)")
