@@ -52,10 +52,15 @@ A message can be sent to specific streams, and a watcher is only woken by
 messages that name it or that are broadcast:
 
 ```bash
-python3 board.py post human note "for crypto and wires" --to crypto,wires
+python3 board.py post human note "everyone"                 # broadcast, the default
+python3 board.py post human note "all but room" --not room  # exclusion, explicit
+python3 board.py post human note "crypto and wires" --to crypto,wires
 python3 board.py post human note "wires only" --to wires
-python3 board.py post human note "everyone"          # broadcast
+python3 board.py post human note "everyone but wires" --to all --not wires
 ```
+
+Include and exclude together is allowed as long as the lists do not
+overlap; a name in both is refused rather than guessed at.
 
 That is what keeps ten agents from waking on each other's errands: the
 board is shared, the wakeups are not. `--all` on `watch` ignores addressing
@@ -66,7 +71,9 @@ what the cursor has already passed.
 
 | flag | command | what it does |
 |---|---|---|
-| `--to a,b` | `post` | recipients; default `all`, meaning everyone but the author |
+| `--to a,b` | `post` | include list; `all` or omitted means everyone but the author |
+| `--not a,b` | `post` | exclude list, honoured even on a broadcast |
+| `--include a,b` | `watch` | only these streams (`--streams` is the older alias) |
 | `--dir PATH` | all | the board directory; `BOARD_DIR` does the same |
 | `--streams a,b` | `init`, `watch` | the streams to create or watch |
 | `--all` | `watch` | include your own stream |

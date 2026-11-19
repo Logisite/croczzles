@@ -119,6 +119,7 @@ def post(
     tags: list[str],
     extra: dict[str, str],
     to: list[str],
+    not_to: list[str],
 ) -> Path:
     now = datetime.now(timezone.utc)
     target = root / stream
@@ -127,6 +128,8 @@ def post(
     stem = f"{now:%Y%m%d-%H%M%S}-{slug(body)}"
     header = [f"from: {stream}", f"at: {now:%Y-%m-%dT%H:%M:%SZ}", f"status: {status}"]
     header.append(f"to: {', '.join(to) if to else 'all'}")
+    if not_to:
+        header.append(f"not: {', '.join(not_to)}")
     if reply_to:
         header.append(f"re: {reply_to}")
     if tags:
@@ -214,23 +217,30 @@ def as_json(path: Path) -> dict:
         "file": msg["file"],
         "at": msg["head"].get("at"),
         "status": msg["head"].get("status"),
-        "to": recipients(msg),
+        "to": recipients(msg)[0],
+        "not": recipients(msg)[1],
         "re": msg["head"].get("re"),
         "tags": [t.strip() for t in msg["head"].get("tags", "").split(",") if t.strip()],
         "body": msg["body"],
     }
 
 
-def recipients(msg: dict) -> list[str]:
-    """Empty means broadcast: everyone who is not the author sees it."""
+def recipients(msg: dict) -> tuple[list[str], list[str]]:
+    """Include and exclude lists. An empty include list means broadcast."""
     raw = msg["head"].get("to", "all").strip()
-    if not raw or raw in ("all", "*"):
-        return []
-    return [part.strip() for part in raw.split(",") if part.strip()]
+    include = [] if not raw or raw in ("all", "*", "everyone") else [
+        part.strip() for part in raw.split(",") if part.strip()
+    ]
+    raw_not = msg["head"].get("not", "").strip()
+    exclude = [part.strip() for part in raw_not.split(",") if part.strip()]
+    return include, exclude
 
 
 def addressed_to(msg: dict, viewer: str) -> bool:
-    return viewer in recipients(msg) or not recipients(msg)
+    include, exclude = recipients(msg)
+    if viewer in exclude:
+        return False
+    return viewer in include or not include
 
 
 # --- cursors -----------------------------------------------------------
@@ -378,8 +388,13 @@ def cmd_post(args: argparse.Namespace) -> int:
     to = [part.strip() for part in args.to.split(",") if part.strip()]
     for name in to:
         check_name("recipient", name)
-    if len(to) == 1 and to[0] in ("all", "*"):
+    if len(to) == 1 and to[0] in ("all", "*", "everyone"):
         to = []
+    not_to = [part.strip() for part in (args.not_to or "").split(",") if part.strip()]
+    for name in not_to:
+        check_name("recipient", name)
+    if to and set(to) & set(not_to):
+        raise SystemExit("board: a recipient cannot be both included and excluded")
 
     body = sys.stdin.read() if args.body in (None, "-") else args.body
     if args.file:
@@ -387,7 +402,7 @@ def cmd_post(args: argparse.Namespace) -> int:
     if not body.strip():
         raise SystemExit("board: empty message, nothing written")
 
-    path = post(root, args.stream, args.status, body, args.re, tags, extra, to)
+    path = post(root, args.stream, args.status, body, args.re, tags, extra, to, not_to)
     msg = parse(path)
     if args.json:
         print(json.dumps(as_json(path)))
@@ -451,7 +466,8 @@ def cmd_streams(args: argparse.Namespace) -> int:
 def cmd_watch(args: argparse.Namespace) -> int:
     root = board_dir(args.dir)
     viewer = check_name("viewer", args.viewer)
-    include = [s.strip() for s in args.streams.split(",") if s.strip()] if args.streams else []
+    wanted = args.include or args.streams
+    include = [s.strip() for s in wanted.split(",") if s.strip()] if wanted else []
     exclude = [s.strip() for s in args.exclude.split(",") if s.strip()] if args.exclude else []
     for name in include + exclude:
         check_name("stream", name)
@@ -553,7 +569,9 @@ def build_parser() -> Parser:
     p_post.add_argument("-f", "--file", default=None, help="read the body from a file")
     p_post.add_argument("--re", dest="re", default=None, help="id of the message this replies to, stream/name")
     p_post.add_argument("--to", default="all",
-                        help="recipients, comma-separated; default all (everyone but the author)")
+                        help="include list, comma-separated, or all (default all)")
+    p_post.add_argument("--not", dest="not_to", default=None,
+                        help="exclude list, comma-separated, even when the message is broadcast")
     p_post.add_argument("--tag", action="append", default=[], help="tag, repeatable or comma-separated")
     p_post.add_argument("--field", action="append", default=[], help="extra header key=value, repeatable")
     p_post.add_argument("--json", action="store_true", help="print the message as JSON")
@@ -567,7 +585,10 @@ def build_parser() -> Parser:
 
     p_watch = sub.add_parser("watch", help="background notifier: print new messages, then exit or wait")
     p_watch.add_argument("viewer", help="who you are; your own stream is skipped unless --all")
-    p_watch.add_argument("--streams", default=None, help="only these streams, comma-separated")
+    p_watch.add_argument("--include", dest="include", default=None,
+                         help="only these streams, comma-separated")
+    p_watch.add_argument("--streams", default=None,
+                         help="alias of --include, kept for older commands")
     p_watch.add_argument("--exclude", default=None, help="ignore these streams, comma-separated")
     p_watch.add_argument("--for", dest="seconds", type=int, default=900, help="give up after N seconds; 0 means forever (default 900)")
     p_watch.add_argument("--every", type=int, default=2, help="seconds between checks (default 2)")
